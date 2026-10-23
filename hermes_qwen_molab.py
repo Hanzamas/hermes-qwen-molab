@@ -680,6 +680,25 @@ def _(
 
 
 @app.cell
+def _(mo):
+    # The switches mirror their values into OPTS. The chat cell reads only OPTS: referencing a switch
+    # there would rebuild the chat on every toggle, and reading .value in its own cell is not allowed.
+    OPTS = {"keep_session": True, "yolo": True}
+    keep_session = mo.ui.switch(
+        value=True,
+        label="Lanjutkan sesi yang sama (--resume)",
+        on_change=lambda v: OPTS.update(keep_session=v),
+    )
+    yolo = mo.ui.switch(
+        value=True,
+        label="Tool tanpa konfirmasi (--yolo)",
+        on_change=lambda v: OPTS.update(yolo=v),
+    )
+    mo.hstack([keep_session, yolo], justify="start")
+    return (OPTS,)
+
+
+@app.cell
 def _(
     API_KEY,
     BASE_URL,
@@ -687,6 +706,8 @@ def _(
     HERMES_EVENTS,
     HERMES_READY,
     HERMES_STDERR,
+    OPTS,
+    REASONING,
     SERVED_NAME,
     json,
     mo,
@@ -697,9 +718,6 @@ def _(
 ):
     mo.stop(not HERMES_READY)
 
-    # Both switches live in this cell so toggling them never rebuilds the chat.
-    keep_session = mo.ui.switch(value=True, label="Lanjutkan sesi yang sama (--resume)")
-    yolo = mo.ui.switch(value=True, label="Tool tanpa konfirmasi (--yolo)")
     SESSION = {"id": None}
 
     def _log_event(text):
@@ -715,10 +733,12 @@ def _(
             "--base-url", BASE_URL,
             "--api-key", API_KEY,
             "-m", SERVED_NAME,
+            # Per-run override; the config key alone triggers an "unrecognized key" notice.
+            "--reasoning", REASONING,
         ]
-        if yolo.value:
+        if OPTS["yolo"]:
             cmd.append("--yolo")
-        if keep_session.value and SESSION["id"]:
+        if OPTS["keep_session"] and SESSION["id"]:
             cmd += ["--resume", SESSION["id"]]
         _log_event(f"$ hermes chat -q {prompt[:120]!r}")
         with open(HERMES_STDERR, "a") as err:
@@ -779,7 +799,6 @@ def _(
     )
     mo.vstack(
         [
-            mo.hstack([keep_session, yolo], justify="start"),
             mo.callout(
                 mo.md(
                     "`--yolo` membuat Hermes menjalankan perintah terminal tanpa minta izin. "
