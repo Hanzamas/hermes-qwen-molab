@@ -860,7 +860,8 @@ def _(mo):
     Keluar dari TUI dengan `/exit` (atau `/quit`). Server vLLM tetap jalan, jadi TUI dan chat notebook bisa dipakai bergantian.
 
     Ketikan diproses kernel yang sama dengan sel notebook, jadi saat sel yang lama (Install, misalnya) sedang jalan,
-    terminal ikut menunggu. xterm.js dimuat browser dari CDN (esm.sh, cadangan jsdelivr).
+    terminal ikut menunggu. xterm.js 5.5.0 diambil kernel (jsdelivr atau unpkg, hash dicek) lalu ditanam di widget,
+    jadi browser tidak memuat apa pun dari luar. Kalau pengambilan gagal, browser memuatnya dari CDN.
     """)
     return
 
@@ -886,7 +887,76 @@ def _(run_live, tmux_btn):
 
 
 @app.cell
-def _(mo, os, signal, subprocess, time):
+def _(HERMES_EVENTS, mo, urllib):
+    import hashlib as _hashlib
+
+    # The kernel downloads xterm.js and the widget inlines it, so the browser needs nothing from a third-party
+    # host: a CSP that blocks CDNs or an offline browser cannot break the terminal. Pinned by SHA-256.
+    _FILES = {
+        "xterm.js": (
+            "@xterm/xterm@5.5.0/lib/xterm.js",
+            "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495",
+        ),
+        "addon-fit.js": (
+            "@xterm/addon-fit@0.10.0/lib/addon-fit.js",
+            "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089",
+        ),
+        "xterm.css": (
+            "@xterm/xterm@5.5.0/css/xterm.css",
+            "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6",
+        ),
+    }
+    _cache = HERMES_EVENTS.parent / "xterm"
+    _cache.mkdir(parents=True, exist_ok=True)
+
+    def _cached():
+        found = {}
+        for name, (_, digest) in _FILES.items():
+            try:
+                data = (_cache / name).read_bytes()
+            except FileNotFoundError:
+                return None
+            if _hashlib.sha256(data).hexdigest() != digest:
+                return None
+            found[name] = data
+        return found
+
+    def _download(host):
+        found = {}
+        for name, (path, digest) in _FILES.items():
+            with urllib.request.urlopen(host + path, timeout=10) as resp:
+                data = resp.read()
+            if _hashlib.sha256(data).hexdigest() != digest:
+                raise ValueError(f"hash {name} tidak cocok")
+            found[name] = data
+        return found
+
+    _found = _cached()
+    _errors = []
+    if _found is None:
+        for _host in ("https://cdn.jsdelivr.net/npm/", "https://unpkg.com/"):
+            try:
+                _found = _download(_host)
+            except Exception as _err:
+                _errors.append(f"{_host}: {_err}")
+                continue
+            for _name, _data in _found.items():
+                (_cache / _name).write_bytes(_data)
+            break
+    XTERM_LIB = {_k: _v.decode("utf-8") for _k, _v in _found.items()} if _found else {}
+    if not XTERM_LIB:
+        _why = "\n".join(_errors)
+        mo.output.replace(
+            mo.callout(
+                mo.md(f"xterm.js tidak bisa diambil kernel, jadi browser akan memuatnya dari CDN.\n\n{_why}"),
+                kind="warn",
+            )
+        )
+    return (XTERM_LIB,)
+
+
+@app.cell
+def _(XTERM_LIB, mo, os, re, signal, subprocess, time):
     import fcntl
     import pty
     import select
@@ -935,6 +1005,10 @@ def _(mo, os, signal, subprocess, time):
     ];
 
     function loadXterm() {
+      if (HX_LOCAL) {
+        // The kernel inlined xterm.js above, so there is nothing to download.
+        return Promise.resolve({ Terminal: globalThis.Terminal, FitAddon: globalThis.FitAddon.FitAddon });
+      }
       if (!globalThis.__hermesXterm) {
         const attempt = (async () => {
           const errors = [];
@@ -964,6 +1038,7 @@ def _(mo, os, signal, subprocess, time):
 
     // xterm measures a character cell on open(), so the stylesheet has to be in before that.
     function loadCss(parent) {
+      if (HX_LOCAL) return Promise.resolve();
       return new Promise((resolve) => {
         const link = document.createElement("link");
         link.rel = "stylesheet";
@@ -1017,6 +1092,7 @@ def _(mo, os, signal, subprocess, time):
           return;
         }
         if (signal && signal.aborted) return;
+        console.info("hermes xterm:", HX_LOCAL ? "tertanam" : "CDN");
 
         const term = new lib.Terminal({
           cursorBlink: true,
@@ -1133,6 +1209,20 @@ def _(mo, os, signal, subprocess, time):
       },
     };
     """
+
+    if XTERM_LIB:
+        # The UMD builds run inside a function that hides any `exports`/`module`/`define` on the page, so they
+        # always take the plain "assign to globalThis" path.
+        _inline = "".join(
+            "(function () {\n  var exports, module, define;\n"
+            + re.sub(r"^//# sourceMappingURL=.*$", "", XTERM_LIB[_name], flags=re.M)
+            + "\n}).call(globalThis);\n"
+            for _name in ("xterm.js", "addon-fit.js")
+        )
+        _ESM = "const HX_LOCAL = true;\n" + _inline + _ESM
+        _CSS = XTERM_LIB["xterm.css"] + _CSS
+    else:
+        _ESM = "const HX_LOCAL = false;\n" + _ESM
 
     class PtySession:
         """A shell on a pty, bridged to the browser through `emit(content, data)`."""
@@ -1465,7 +1555,7 @@ def _(mo, os, signal, subprocess, time):
 
 
 @app.cell
-def _(Path, TMUX, XTerm, mo, os):
+def _(Path, TMUX, XTERM_LIB, XTerm, mo, os):
     # The shell gets the kernel's environment minus its Python venv, plus ~/.local/bin so `hermes` resolves.
     _env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP")}
     _venv = _env.pop("VIRTUAL_ENV", None)
@@ -1491,6 +1581,7 @@ def _(Path, TMUX, XTerm, mo, os):
         _session = None
         _note = "tmux belum terpasang, jadi shell ini mati kalau sel ini dijalankan ulang. Klik **Pasang tmux** di atas."
 
+    _note += " xterm.js: " + ("tertanam, tanpa CDN." if XTERM_LIB else "dari CDN lewat browser (kernel gagal mengambilnya).")
     term_widget = XTerm(_argv, _env, session=_session, cwd=str(Path.home()))
     term_ui = mo.ui.anywidget(term_widget)
     term_widget.start()

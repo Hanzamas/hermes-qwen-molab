@@ -33,7 +33,7 @@ Ada terminal xterm.js langsung di notebook (bagian *Hermes TUI di terminal*). Ia
 
 4. Lanjutkan sesi dari chat notebook dengan `--resume <session_id>` (ada di log Hermes) atau `--resume latest`.
 
-Ketikan diproses kernel yang sama dengan sel notebook, jadi saat sel panjang (Install) jalan, terminal ikut menunggu. xterm.js dimuat browser dari CDN (esm.sh, cadangan jsdelivr).
+Ketikan diproses kernel yang sama dengan sel notebook, jadi saat sel panjang (Install) jalan, terminal ikut menunggu. xterm.js 5.5.0 diambil kernel (jsdelivr atau unpkg, hash dicek) lalu ditanam di widget, jadi browser tidak memuat apa pun dari luar. Kalau pengambilan gagal, browser memuatnya dari CDN.
 
 Isi workspace molab dihapus tiap notebook mati, jadi install dan download model diulang tiap sesi.
 Jangan membuka port server ke luar (tunnel/proxy): aturan molab melarangnya.
