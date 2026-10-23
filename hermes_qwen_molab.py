@@ -318,12 +318,12 @@ def _(DRIVER_MAJOR, VENV, VLLM_BIN, VLLM_OK, install_btn, mo, run_live):
         mo.callout(mo.md("GPU belum terdeteksi. Nyalakan GPU, jalankan ulang **Cek mesin**, baru Install."), kind="danger"),
     )
 
-    # Triton (used by vLLM's Qwen3.8 linear-attention kernels) compiles a small C launcher and needs cc.
+    # Triton needs cc for its C launcher; FlashInfer JIT needs ninja (molab ships neither by default).
     run_live(
-        "command -v cc >/dev/null && echo 'cc ada' "
-        "|| (apt-get -qq update && apt-get -qq install -y gcc g++ >/dev/null && echo 'gcc terpasang') "
-        "|| echo 'gcc gagal dipasang'",
-        "Cek compiler C",
+        "(command -v cc && command -v ninja) >/dev/null && echo 'cc + ninja ada' "
+        "|| (apt-get -qq update && apt-get -qq install -y gcc g++ ninja-build >/dev/null && echo 'gcc + ninja terpasang') "
+        "|| echo 'gcc/ninja gagal dipasang'",
+        "Cek compiler C + ninja",
     )
     if VLLM_OK.exists():
         mo.output.replace(mo.md(f"vLLM sudah terpasang di `{VENV}`."))
@@ -452,7 +452,13 @@ def _(
             stdout=_log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-            env={**os.environ, "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"},
+            env={
+                **os.environ,
+                "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1",
+                # FlashInfer JIT looks for ninja and nvcc on PATH; molab does not export the CUDA bin dir.
+                "PATH": f"{VLLM_BIN.parent}:/usr/local/cuda/bin:{os.environ.get('PATH', '')}",
+                "CUDA_HOME": os.environ.get("CUDA_HOME", "/usr/local/cuda"),
+            },
         )
         VLLM_PID.write_text(str(_proc.pid))
         PROCS["vllm"] = _proc
