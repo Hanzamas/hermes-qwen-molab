@@ -17,6 +17,7 @@ def _():
     import marimo as mo
     import json
     import os
+    import re
     import secrets
     import signal
     import subprocess
@@ -24,7 +25,7 @@ def _():
     import urllib.request
     from pathlib import Path
 
-    return Path, json, mo, os, secrets, signal, subprocess, time, urllib
+    return Path, json, mo, os, re, secrets, signal, subprocess, time, urllib
 
 
 @app.cell(hide_code=True)
@@ -96,7 +97,11 @@ def _(Path, secrets):
     if not _key_file.exists():
         _key_file.write_text(secrets.token_hex(16))
     API_KEY = _key_file.read_text().strip()
+
+    # Popen handles started from this kernel; poll() reaps exited children so they never linger as zombies.
+    PROCS = {}
     return (
+        PROCS,
         API_KEY,
         BASE_URL,
         HERMES_BIN,
@@ -116,7 +121,7 @@ def _(Path, secrets):
 
 
 @app.cell
-def _(VLLM_PID, mo, os, signal, subprocess, time, urllib):
+def _(PROCS, VLLM_PID, mo, os, re, signal, subprocess, time, urllib):
     def run_live(cmd, title, env=None):
         """Run a shell command and stream its last lines into the cell output."""
         _env = {**os.environ, **(env or {})}
@@ -161,33 +166,68 @@ def _(VLLM_PID, mo, os, signal, subprocess, time, urllib):
         except Exception as e:
             return None, str(e)
 
-    def tail(path, n=30):
+    def tail(path, n=30, max_bytes=65536):
         try:
             with open(path, "rb") as f:
                 f.seek(0, os.SEEK_END)
-                f.seek(max(0, f.tell() - 65536))
+                f.seek(max(0, f.tell() - max_bytes))
                 return "\n".join(f.read().decode("utf-8", "replace").splitlines()[-n:])
         except FileNotFoundError:
             return "(belum ada log)"
 
+    _error_line = re.compile(r"\b\w*(Error|Exception)\b:|\bERROR\b|out of memory|CUDA error")
+    # vLLM's own wrapper messages only say "see root cause above".
+    _wrapper = ("Engine core initialization failed", "Frontend process failed", "EngineCore failed to start")
+
+    def log_errors(path, n=15):
+        """Last distinct error lines of a log, without vLLM's generic wrapper messages."""
+        found = []
+        for line in tail(path, 5000, max_bytes=1 << 20).splitlines():
+            if _error_line.search(line) and not any(w in line for w in _wrapper) and line not in found:
+                found.append(line)
+        return "\n".join(found[-n:])
+
     def vllm_alive():
-        """True while any process of the recorded vLLM process group is still running."""
+        """True while the vLLM API server is running."""
+        proc = PROCS.get("vllm")
+        if proc is not None:
+            return proc.poll() is None
+        # Started before a kernel restart: the group is no longer our child, so check it directly.
         try:
             pid = int(VLLM_PID.read_text())
         except (FileNotFoundError, ValueError):
             return False
-        try:
-            # Reap the leader if it already exited, so a zombie does not count as alive.
-            os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            pass
         try:
             os.killpg(pid, 0)
             return True
         except ProcessLookupError:
             return False
 
-    return http_get, run_live, tail, vllm_alive
+    def vllm_kill(sig=signal.SIGTERM, wait=60):
+        """Signal the whole vLLM process group (API server + EngineCore) and wait until it is gone."""
+        try:
+            pid = int(VLLM_PID.read_text())
+        except (FileNotFoundError, ValueError):
+            return None
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            pass
+        for _ in range(wait):
+            if "vllm" in PROCS:
+                PROCS["vllm"].poll()
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(1)
+        else:
+            os.killpg(pid, signal.SIGKILL)
+        VLLM_PID.unlink(missing_ok=True)
+        PROCS.pop("vllm", None)
+        return pid
+
+    return http_get, log_errors, run_live, tail, vllm_alive, vllm_kill
 
 
 @app.cell(hide_code=True)
@@ -205,6 +245,7 @@ def _(mo, subprocess):
         return (r.stdout or r.stderr).strip()
 
     _gpu = _q("nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader")
+    _cc = _q("command -v cc gcc nvcc | tr '\\n' ' '")
     try:
         DRIVER_MAJOR = int(_gpu.split(",")[1].strip().split(".")[0])
     except (IndexError, ValueError):
@@ -224,6 +265,7 @@ def _(mo, subprocess):
         [
             mo.md(f"**GPU:** `{_gpu or 'tidak terdeteksi'}`"),
             mo.md(f"**User id:** `{_q('id -u')}`  ·  **uv:** `{_q('uv --version')}`"),
+            mo.md(f"**Compiler (Triton butuh `cc`):** `{_cc or 'tidak ada'}`"),
             mo.plain_text(_q("df -h / /tmp $HOME 2>/dev/null")),
             _note,
         ]
@@ -276,6 +318,13 @@ def _(DRIVER_MAJOR, VENV, VLLM_BIN, VLLM_OK, install_btn, mo, run_live):
         mo.callout(mo.md("GPU belum terdeteksi. Nyalakan GPU, jalankan ulang **Cek mesin**, baru Install."), kind="danger"),
     )
 
+    # Triton (used by vLLM's Qwen3.8 linear-attention kernels) compiles a small C launcher and needs cc.
+    run_live(
+        "command -v cc >/dev/null && echo 'cc ada' "
+        "|| (apt-get -qq update && apt-get -qq install -y gcc g++ >/dev/null && echo 'gcc terpasang') "
+        "|| echo 'gcc gagal dipasang'",
+        "Cek compiler C",
+    )
     if VLLM_OK.exists():
         mo.output.replace(mo.md(f"vLLM sudah terpasang di `{VENV}`."))
     else:
@@ -318,6 +367,7 @@ def _(
     API_KEY,
     MODELS,
     PORT,
+    PROCS,
     REASONING,
     SERVED_NAME,
     SERVER_INFO,
@@ -331,10 +381,12 @@ def _(
     mo,
     model_choice,
     os,
+    signal,
     start_btn,
     subprocess,
     use_mtp,
     vllm_alive,
+    vllm_kill,
 ):
     mo.stop(
         not start_btn.value,
@@ -359,6 +411,8 @@ def _(
     if vllm_alive() or http_get(f"http://127.0.0.1:{PORT}/health")[0] == 200:
         mo.output.replace(mo.md("Server sudah jalan atau masih loading. Klik **Stop vLLM** dulu kalau mau ganti pengaturan."))
     else:
+        # A crashed run can leave EngineCore children holding VRAM; clear them before starting again.
+        vllm_kill(signal.SIGKILL, wait=15)
         _cmd = [
             str(VLLM_BIN), "serve", _repo,
             "--served-model-name", SERVED_NAME,
@@ -401,6 +455,7 @@ def _(
             env={**os.environ, "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"},
         )
         VLLM_PID.write_text(str(_proc.pid))
+        PROCS["vllm"] = _proc
         # The Connect cell reads this instead of the widgets, so changing a widget never resets the chat.
         SERVER_INFO.write_text(json.dumps({"model": _repo, "context": ctx_len.value}))
         mo.output.replace(
@@ -418,30 +473,14 @@ def _(
 
 
 @app.cell
-def _(VLLM_PID, mo, os, signal, stop_btn, time):
+def _(mo, stop_btn, vllm_kill):
     mo.stop(not stop_btn.value)
 
-    try:
-        _pid = int(VLLM_PID.read_text())
-        os.killpg(_pid, signal.SIGTERM)
-        # Wait for the whole group (API server + EngineCore) to free the GPU before allowing a new Start.
-        for _ in range(60):
-            try:
-                os.waitpid(_pid, os.WNOHANG)
-            except ChildProcessError:
-                pass
-            try:
-                os.killpg(_pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(1)
-        else:
-            os.killpg(_pid, signal.SIGKILL)
-        VLLM_PID.unlink(missing_ok=True)
-        mo.output.replace(mo.md(f"vLLM (pid `{_pid}`) dihentikan."))
-    except (FileNotFoundError, ProcessLookupError, ValueError):
-        VLLM_PID.unlink(missing_ok=True)
-        mo.output.replace(mo.md("Tidak ada server vLLM yang tercatat jalan."))
+    # Waits for the whole group to free the GPU before a new Start is allowed.
+    _pid = vllm_kill()
+    mo.output.replace(
+        mo.md(f"vLLM (pid `{_pid}`) dihentikan.") if _pid else mo.md("Tidak ada server vLLM yang tercatat jalan.")
+    )
     return
 
 
@@ -454,7 +493,7 @@ def _(mo):
 
 
 @app.cell
-def _(PORT, VLLM_LOG, VLLM_PID, http_get, mo, tail, time, vllm_alive):
+def _(PORT, VLLM_LOG, VLLM_PID, http_get, log_errors, mo, tail, time, vllm_alive):
     # A mo.Thread keeps updating while a Hermes chat turn occupies the kernel.
     def _watch_server():
         me = mo.current_thread()
@@ -464,10 +503,15 @@ def _(PORT, VLLM_LOG, VLLM_PID, http_get, mo, tail, time, vllm_alive):
             elif vllm_alive():
                 badge = mo.callout(mo.md("**Loading**: lagi download atau load model."), kind="neutral")
             elif VLLM_PID.exists():
-                badge = mo.callout(mo.md("**vLLM mati.** Cek log di bawah, lalu Stop dan Start lagi."), kind="danger")
+                badge = mo.callout(mo.md("**vLLM mati.** Lihat baris error di bawah, lalu Start lagi."), kind="danger")
             else:
                 badge = mo.callout(mo.md("**Belum di-start.**"), kind="neutral")
-            mo.output.replace(mo.vstack([badge, mo.md("**Log vLLM (40 baris terakhir)**"), mo.plain_text(tail(VLLM_LOG, 40))]))
+            items = [badge]
+            errors = log_errors(VLLM_LOG)
+            if errors:
+                items += [mo.md("**Baris error di log vLLM (penyebab aslinya biasanya di sini)**"), mo.plain_text(errors)]
+            items += [mo.md("**Log vLLM (40 baris terakhir)**"), mo.plain_text(tail(VLLM_LOG, 40))]
+            mo.output.replace(mo.vstack(items))
             time.sleep(3)
 
     mo.Thread(target=_watch_server, daemon=True).start()
