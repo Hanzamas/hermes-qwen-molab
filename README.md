@@ -21,11 +21,11 @@ Notebook [marimo](https://marimo.io) untuk menjalankan [Hermes Agent](https://he
 
 ## Hermes TUI di terminal
 
-`colab-xterm` tidak jalan di molab. Pakai terminal bawaan marimo:
+Ada terminal xterm.js langsung di notebook (bagian *Hermes TUI di terminal*). Ia jalan di mesin molab lewat widget marimo (anywidget), jadi tanpa port, proxy, atau tunnel. `colab-xterm` tidak bisa dipakai di molab karena memakai `google.colab.kernel.proxyPort`.
 
 1. Pastikan server `READY` dan **Sambungkan Hermes** sudah diklik (itu yang mengisi `~/.hermes/config.yaml`).
-2. Tekan `Ctrl-J`, pilih tab **Terminal** (atau ``Ctrl-` ``).
-3. Jalankan:
+2. Disarankan: klik **Pasang tmux**. Sesi terminal tetap hidup walau tab ditutup atau sel dijalankan ulang. Lepas dengan `Ctrl-b` lalu `d`.
+3. Klik tombol Hermes di bawah terminal, atau ketik:
 
    ```bash
    source ~/.bashrc && hermes chat --reasoning xhigh --yolo
@@ -33,7 +33,9 @@ Notebook [marimo](https://marimo.io) untuk menjalankan [Hermes Agent](https://he
 
 4. Lanjutkan sesi dari chat notebook dengan `--resume <session_id>` (ada di log Hermes) atau `--resume latest`.
 
+Ketikan diproses kernel yang sama dengan sel notebook, jadi saat sel panjang (Install) jalan, terminal ikut menunggu. xterm.js dimuat browser dari CDN (esm.sh, cadangan jsdelivr).
+
 Isi workspace molab dihapus tiap notebook mati, jadi install dan download model diulang tiap sesi.
 Jangan membuka port server ke luar (tunnel/proxy): aturan molab melarangnya.
 
-Belum dites end-to-end di GPU molab.
+Belum dites end-to-end di GPU molab. Widget terminalnya juga belum pernah jalan di molab.
