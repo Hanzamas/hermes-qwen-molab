@@ -684,17 +684,18 @@ def _(mo):
     # The switches mirror their values into OPTS. The chat cell reads only OPTS: referencing a switch
     # there would rebuild the chat on every toggle, and reading .value in its own cell is not allowed.
     OPTS = {"keep_session": True, "yolo": True}
-    keep_session = mo.ui.switch(
+    # Underscore names stay local to this cell, so they can never clash with names in other cells.
+    _keep = mo.ui.switch(
         value=True,
         label="Lanjutkan sesi yang sama (--resume)",
         on_change=lambda v: OPTS.update(keep_session=v),
     )
-    yolo = mo.ui.switch(
+    _yolo = mo.ui.switch(
         value=True,
         label="Tool tanpa konfirmasi (--yolo)",
         on_change=lambda v: OPTS.update(yolo=v),
     )
-    mo.hstack([keep_session, yolo], justify="start")
+    mo.hstack([_keep, _yolo], justify="start")
     return (OPTS,)
 
 
@@ -831,6 +832,37 @@ def _(HERMES_EVENTS, HERMES_STDERR, mo, tail, time):
             time.sleep(3)
 
     mo.Thread(target=_watch_hermes, daemon=True).start()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Hermes TUI di terminal
+
+    Selain chat di atas, Hermes versi TUI (tampilan terminal lengkap) bisa dijalankan di terminal bawaan marimo.
+    `colab-xterm` tidak bisa dipakai di molab: paket itu butuh magic `%xterm` IPython dan proxy port Colab.
+
+    1. Pastikan panel **Server** sudah `READY` dan tombol **Sambungkan Hermes** sudah diklik.
+       Tombol itu yang mengisi `~/.hermes/config.yaml` supaya Hermes memakai vLLM lokal.
+    2. Tekan `Ctrl-J` untuk membuka panel developer, lalu pilih tab **Terminal** (atau langsung ``Ctrl-` ``).
+    3. Jalankan:
+
+       ```bash
+       source ~/.bashrc && hermes chat --reasoning xhigh --yolo
+       ```
+
+    4. Mau melanjutkan obrolan dari chat notebook? Ambil `session=` dari log Hermes di atas, lalu:
+
+       ```bash
+       hermes chat --reasoning xhigh --yolo --resume <session_id>
+       ```
+
+       Atau `--resume latest` untuk sesi terakhir.
+
+    Keluar dari TUI dengan mengetik `/exit` (atau `/quit`).
+    Server vLLM tetap jalan, jadi TUI dan chat notebook bisa dipakai bergantian.
+    """)
     return
 
 

@@ -19,6 +19,20 @@ Notebook [marimo](https://marimo.io) untuk menjalankan [Hermes Agent](https://he
 3. Klik **Install**, lalu **Start vLLM**, tunggu panel Server `READY`.
 4. Klik **Sambungkan Hermes**, lalu ngobrol di panel Chat.
 
+## Hermes TUI di terminal
+
+`colab-xterm` tidak jalan di molab. Pakai terminal bawaan marimo:
+
+1. Pastikan server `READY` dan **Sambungkan Hermes** sudah diklik (itu yang mengisi `~/.hermes/config.yaml`).
+2. Tekan `Ctrl-J`, pilih tab **Terminal** (atau ``Ctrl-` ``).
+3. Jalankan:
+
+   ```bash
+   source ~/.bashrc && hermes chat --reasoning xhigh --yolo
+   ```
+
+4. Lanjutkan sesi dari chat notebook dengan `--resume <session_id>` (ada di log Hermes) atau `--resume latest`.
+
 Isi workspace molab dihapus tiap notebook mati, jadi install dan download model diulang tiap sesi.
 Jangan membuka port server ke luar (tunnel/proxy): aturan molab melarangnya.
 
