@@ -322,8 +322,13 @@ def _(DRIVER_MAJOR, VENV, VLLM_BIN, VLLM_OK, install_btn, mo, run_live):
     run_live(
         "(command -v cc && command -v ninja) >/dev/null && echo 'cc + ninja ada' "
         "|| (apt-get -qq update && apt-get -qq install -y gcc g++ ninja-build >/dev/null && echo 'gcc + ninja terpasang') "
-        "|| echo 'gcc/ninja gagal dipasang'",
-        "Cek compiler C + ninja",
+        "|| echo 'gcc/ninja gagal dipasang'; "
+        # The pip CUDA runtime ships only libcudart.so.13, but FlashInfer links with -lcudart from lib64.
+        "for D in /usr/local/lib/python3.*/site-packages/nvidia/cu13 "
+        f"{VENV}/lib/python3.*/site-packages/nvidia/cu13; do "
+        "[ -d \"$D\" ] || continue; L=$(find \"$D\" -name 'libcudart.so.1*' | head -1); "
+        "[ -n \"$L\" ] && mkdir -p \"$D/lib64\" && ln -sf \"$L\" \"$D/lib64/libcudart.so\" && echo \"libcudart.so -> $L\"; done",
+        "Cek compiler C + ninja + libcudart",
     )
     if VLLM_OK.exists():
         mo.output.replace(mo.md(f"vLLM sudah terpasang di `{VENV}`."))
